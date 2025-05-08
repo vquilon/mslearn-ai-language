@@ -9,7 +9,7 @@ import azure.cognitiveservices.speech as speech_sdk
 from playsound import playsound
 
 # Add Azure OpenAI package
-from openai import AzureOpenAI
+from openai import AzureOpenAI, AsyncAzureOpenAI
 
 def main():
     try:
@@ -30,18 +30,18 @@ def main():
         #     TellTime()
 
         # Using openai
-        TalkWithOpenAI()
+        asyncio.run(TalkWithOpenAI())
 
     except Exception as ex:
         print(ex)
 
-def TalkWithOpenAI():
+async def TalkWithOpenAI():
     azure_oai_endpoint = os.getenv("AZURE_OAI_ENDPOINT")
     azure_oai_key = os.getenv("AZURE_OAI_KEY")
     azure_oai_deployment = os.getenv("AZURE_OAI_DEPLOYMENT")
     
     # Initialize the Azure OpenAI client...
-    client = AzureOpenAI(
+    client = AsyncAzureOpenAI(
         azure_endpoint = azure_oai_endpoint, 
         api_key=azure_oai_key,  
         api_version="2024-02-15-preview"
@@ -86,7 +86,7 @@ Me llamo Forest y soy un entusiasta del senderismo.
         messages_array.append({"role": "user", "content": input_text})
         
         # Send request to Azure OpenAI model
-        response = client.chat.completions.create(
+        response = await client.chat.completions.create(
             model=azure_oai_deployment,
             temperature=0.7,
             max_tokens=400,
@@ -96,7 +96,7 @@ Me llamo Forest y soy un entusiasta del senderismo.
 
         # Mostrar la respuesta en modo streaming
         print("Response: ", end="")
-        ai_message = asyncio.run(run_synthesis(response))
+        ai_message = await run_synthesis(response)
         # ai_message = process_text_stream(response, text_callback, voice_callback)
 
         # for chunk in response:
@@ -129,7 +129,7 @@ async def run_synthesis(response):
 async def process_text_stream(response, text_callback, voice_queue):
     ai_message = ""
     buffer = ""
-    for chunk in response:
+    async for chunk in response:
         if len(chunk.choices) > 0:
             content = chunk.choices[0].delta.content
             if content:
@@ -150,14 +150,16 @@ async def process_text_stream(response, text_callback, voice_queue):
     # Enviar cualquier texto restante al finalizar
     if buffer.strip():
         await voice_queue.put(buffer.strip())
+    
+    return ai_message  # Devolver el mensaje completo
 
 def split_by_prosody(buffer):
     # Dividir el buffer en bloques delimitados por <prosody> y </prosody>
     blocks = []
     start = 0
     while start < len(buffer):
-        open_tag = buffer.find("<prosody>", start)
-        close_tag = buffer.find("</prosody>", open_tag)
+        open_tag = buffer.find("<prosody", start)
+        close_tag = buffer.find("</prosody>", start)
         if open_tag != -1 and close_tag != -1:
             blocks.append(buffer[open_tag:close_tag + 10])  # Incluir etiquetas
             start = close_tag + 10
@@ -167,21 +169,17 @@ def split_by_prosody(buffer):
 
 def detect_prosody(buffer):
     # Validar que las etiquetas <prosody> y </prosody> estén balanceadas
-    stack = []
+    is_opened = False
     i = 0
     while i < len(buffer):
         if buffer[i:i+8] == "<prosody":
-            stack.append("<prosody")
+            is_opened = True
             i += 8
-        elif buffer[i:i+10] == "</prosody>":
-            if stack and stack[-1] == "<prosody":
-                return True
-            else:
-                return False
-            i += 10
+        elif is_opened and buffer[i:i+10] == "</prosody>":
+            return True
         else:
             i += 1
-    return len(stack) != 0
+    return False
 
 # Callback para imprimir texto en tiempo real
 def text_callback(content):
@@ -214,7 +212,6 @@ def talk(content: str):
             {} \
         </voice> \
     </speak>".format(content)
-    print(responseSsml)
     speak = speech_synthesizer.speak_ssml_async(responseSsml).get()
     if speak.reason != speech_sdk.ResultReason.SynthesizingAudioCompleted:
         print(speak.reason)
